@@ -1,0 +1,17 @@
+{
+  "name": "madzi-alipo",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "node-fetch": "^3.2.10",
+    "p-queue": "^7.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.11.5"
+  }
+}
