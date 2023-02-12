@@ -91,6 +91,44 @@ const DETAIL_PROPERTY_NAMES = new Set([
   'visitStaff', // VisitStaff[]
 ]);
 
+const NEW_SOURCE_PROPERTY_NAMES = new Set([
+  'newSourceAnswerId', // number
+  'code', // string
+  'newSourceName', // string
+  'agencyRecordId', // string
+  'mergewatersource', // null
+  'canEditNewSourceName', // boolean
+  'canViewCommitteeMembers', // boolean
+  'waterSourceName', // string
+  'waterSourceTypeName', // string
+  'waterSourceStatus', // string
+  'statusPin', // string
+
+  /**
+   * [
+   *   -16.000774517152788,
+   *   34.828884507381609
+   * ]
+   */
+  'sourceLatLng', // number[]
+  'lastVisitDate', // string
+  'isFlagged', // boolean
+  'canUnflagWaterSource', // boolean
+  'isCommitteeAvailable', // string
+  'isFundAvailable', // string
+  'installedBy', // string
+  'installDate', // string
+  'DTAW', // string
+  'TTAW', // string
+  'zoneMembership', // object[]
+  'committeeMembers', // object[]
+  'informationSectionBgColor', // string
+  'informationSection', // object[]
+  'activitySection', // object[]
+  'agencies', // object[]
+  'formAnswers', // object[]
+]);
+
 async function main() {
   let locationTable = [];
 
@@ -105,7 +143,7 @@ async function main() {
       queue.add(async () => {
         if (!existsSync(path)) {
           console.log(`Fetching breakdown data for year ${year}, agency ${agencyName}`);
-          const locationTableForYear = await getLocationTableForYearAndAgency(year, agencyId);
+          const locationTableForYear = await getLocationTableForYearAndAgency({year, agencyId, agencyName});
           writeFileSync(path, JSON.stringify(locationTableForYear.map((row) => ({ ...row, agencyId, agencyName})), null, 2));
         } else {
           console.log(`Reading file ${path} for breakdown data for year ${year}, agency ${agencyName}`);
@@ -125,6 +163,12 @@ async function getBearerToken() {
   const token = process.env.BEARER_TOKEN;
   if (!token) throw new Error('The BEARER_TOKEN environment variable must be set in order to run this program');
   return token;
+}
+
+function enforcePropertyNames(obj, allowedPropertyNames) {
+  Object.keys(obj).forEach((k) => {
+    if (!allowedPropertyNames.has(k)) console.log(k);
+  });
 }
 
 /**
@@ -151,7 +195,21 @@ async function getAgencies() {
   return responseJson;
 }
 
-async function getLocationTableForYearAndAgency(year, agencyId) {
+async function getNewSourceAnswerDetail(options) {
+  const { newSourceCode } = options;
+  const token = await getBearerToken();
+  const headers = new Headers({ authorization: `Bearer ${token}`});
+  const response = await fetch(
+    new Request(`https://www.madzialipo.org/api/Api_NewSourceAnswers/GetNewSourceAnswerDetail/?newSourceAnswerCode=${newSourceCode}`),
+    { headers },
+  );
+  const responseJson = await response.json();
+  enforcePropertyNames(responseJson, NEW_SOURCE_PROPERTY_NAMES);
+  return responseJson;
+}
+
+async function getLocationTableForYearAndAgency(options) {
+  const { year, agencyId, agencyName } = options;
   const token = await getBearerToken();
   const headers = new Headers({ authorization: `Bearer ${token}`});
   const response = await fetch(new Request(
@@ -173,9 +231,14 @@ async function getLocationTableForYearAndAgency(year, agencyId) {
   ));
   const responseJson = await response.json();
 
-  console.log(`Length of table for year ${year}: ${responseJson.length}`)
+  console.log(`Length of table for year ${year}, agency ${agencyName}: ${responseJson.length}`)
   return populateLocationTable(responseJson);
 }
+
+/**
+ * Map<newSourceAnswerCode, number[]>
+ */
+const newSourceLatLongMap = new Map();
 
 async function populateLocationTable(locationTable) {
   const token = await getBearerToken();
@@ -184,10 +247,9 @@ async function populateLocationTable(locationTable) {
   const queue = new PQueue({ concurrency: 25 });
 
   const newLocationTable = [];
+  let encounteredErrors = false;
   for (const location of locationTable) {
-    Object.keys(location).forEach((k) => {
-      if (!LOCATION_PROPERTY_NAMES.has(k)) console.log(k);
-    });
+    enforcePropertyNames(location, LOCATION_PROPERTY_NAMES);
 
     queue.add(async () => {
       const detailResponse = await fetch(
@@ -197,9 +259,20 @@ async function populateLocationTable(locationTable) {
       console.log(`Response: ${location.answerId}`)
       const detail = await detailResponse.json();
 
-      Object.keys(detail).forEach((k) => {
-        if (!DETAIL_PROPERTY_NAMES.has(k)) console.log(k);
-      });
+      enforcePropertyNames(detail, DETAIL_PROPERTY_NAMES);
+
+      if (!newSourceLatLongMap.has(detail.newSourceCode)) {
+        const newSourceAnswerDetail = await getNewSourceAnswerDetail({ newSourceCode: detail.newSourceCode });
+        newSourceLatLongMap.set(detail.newSourceCode, newSourceAnswerDetail.sourceLatLng);
+      }
+
+      const newSourceLatLong = newSourceLatLongMap.get(detail.newSourceCode);
+      let latitude, longitude;
+      try {
+        [ latitude, longitude ] = newSourceLatLong;
+      } catch (err) {
+        console.log(`Could not retrieve lat/long for newSourceCode: ${detail.newSourceCode}`)
+      }
 
       newLocationTable.push({
         ...location,
@@ -227,9 +300,15 @@ async function populateLocationTable(locationTable) {
         imageUrls: detail.imageAnswers.map((a) => a.url).join('\n'),
         visitStaff: detail.visitStaff.map((s) => `${s.firstName} ${s.lastName}`).join('\n'),
         ...toPartsUsedMap(detail.partUsed),
+
+        latitude,
+        longitude,
       });
       
-    }).catch((err) => console.error(err))
+    }).catch((err) => {
+      encounteredErrors = true;
+      console.error(err);
+    })
   }
 
   await queue.onIdle();
